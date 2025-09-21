@@ -1,0 +1,96 @@
+name: Security CI - Mobile
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+  workflow_dispatch: {}
+
+jobs:
+  sast_sca:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Ensure jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      # SAST
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install semgrep==1.93.0
+      - name: Semgrep (TS/JS)
+        run: semgrep --config p/owasp-top-ten --config p/javascript --exclude node_modules --exclude build --json --output semgrep-app.json
+
+      # SCA
+      - uses: actions/setup-node@v4
+        with: { node-version: "20" }
+      - name: Install
+        run: npm ci --ignore-scripts
+      - name: npm audit
+        run: npm audit --omit=dev --json > npm-audit.json || true
+
+      # HTML + PDF
+      - name: Build HTML
+        run: |
+          mkdir -p security-reports/mobile
+          node -e "require('fs').writeFileSync('security-reports/index.html', `
+          <!doctype html><html><head><meta charset='utf-8'><title>Relatório de Segurança - Mobile</title>
+          <style>body{font-family:Arial;margin:24px} a{color:#064173}</style></head><body>
+          <h1>Relatório de Segurança - WiseBuddy Mobile</h1>
+          <ul>
+            <li><a href='../semgrep-app.json'>Semgrep (JSON)</a></li>
+            <li><a href='./mobile/npm-audit.json'>npm audit (JSON)</a></li>
+          </ul>
+          <p>Gerado: ${new Date().toISOString()}</p></body></html>`);"
+          mv npm-audit.json security-reports/mobile/npm-audit.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: security-report-mobile
+          path: |
+            security-reports/**
+            semgrep-app.json
+
+      - name: Generate PDF
+        run: |
+          npm i puppeteer@23
+          node -e "
+          const puppeteer=require('puppeteer');
+          (async()=>{
+            const b=await puppeteer.launch({args:['--no-sandbox']});
+            const p=await b.newPage();
+            await p.goto('file://' + process.cwd() + '/security-reports/index.html',{waitUntil:'load'});
+            await p.pdf({path:'security-reports/security-report-mobile.pdf', format:'A4', printBackground:true});
+            await b.close();
+          })();"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: security-report-mobile-pdf
+          path: security-reports/security-report-mobile.pdf
+
+      # Gates
+      - name: Fail on Semgrep High/Critical
+        run: |
+          jq -e '[.results[] | select(.extra.severity=="ERROR" or .extra.severity=="WARNING")] | length == 0' semgrep-app.json || (echo "Semgrep HIGH/CRITICAL" && exit 1)
+      - name: Fail on npm audit high/critical
+        run: |
+          H=$(jq '.metadata.vulnerabilities.high' security-reports/mobile/npm-audit.json)
+          C=$(jq '.metadata.vulnerabilities.critical' security-reports/mobile/npm-audit.json)
+          echo "High=$H Critical=$C"
+          if [ "$C" -gt 0 ] || [ "$H" -gt 0 ]; then exit 1; fi
+
+      # Email (DESATIVADO em PR)
+      - name: Send email
+        if: always() && github.event_name != 'pull_request'
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ secrets.SMTP_HOST }}
+          server_port: ${{ secrets.SMTP_PORT }}
+          username: ${{ secrets.SMTP_USER }}
+          password: ${{ secrets.SMTP_PASS }}
+          subject: "[Security CI] MobileAPP - ${{ github.workflow }} #${{ github.run_number }}"
+          from: ${{ secrets.SMTP_FROM }}
+          to: ${{ secrets.NOTIFY_TO }}
+          secure: true
+          attachments: security-reports/security-report-mobile.pdf
+          html_body: "<p>Relatório de segurança do Mobile concluído (fork).</p>"
