@@ -28,8 +28,10 @@ jobs:
       - name: Install
         run: npm ci --ignore-scripts
       - name: npm audit
-        run: npm audit --omit=dev --json > npm-audit.json || true
-
+        run: |
+          export NODE_OPTIONS=--openssl-legacy-provider
+          npm audit --omit=dev --json > npm-audit.json || true
+          
       # HTML + PDF
       - name: Build HTML
         run: |
