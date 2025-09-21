@@ -27,10 +27,11 @@ jobs:
         with: { node-version: "20" }
       - name: Install
         run: npm ci --ignore-scripts
-      - name: npm audit
-        run: |
-          export NODE_OPTIONS=--openssl-legacy-provider
-          npm audit --omit=dev --json > npm-audit.json || true
+      - name: Audit dependencies
+        uses: oke-py/npm-audit-action@v2
+        with:
+          audit_level: high
+          production_flag: true
           
       # HTML + PDF
       - name: Build HTML
